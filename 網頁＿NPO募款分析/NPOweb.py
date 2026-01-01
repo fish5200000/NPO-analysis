@@ -3,12 +3,12 @@ import google.generativeai as genai
 from duckduckgo_search import DDGS
 import pandas as pd
 import json
+import time
 
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="NPO 募款戰情室", page_icon="🚀", layout="wide")
 
-# --- 2. 設定 Gemini API (從 Secrets 讀取) ---
-# 為了安全，不要直接把 Key 寫在程式碼裡，稍後教你怎麼設定 Secrets
+# --- 2. 設定 Gemini API ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
@@ -18,32 +18,42 @@ else:
 # --- 3. 定義功能函數 ---
 
 def search_web(keyword):
-    """使用 DuckDuckGo 搜尋網路資料"""
+    """使用 DuckDuckGo 搜尋網路資料 (增加重試機制)"""
     results_text = ""
-    with DDGS() as ddgs:
-        # 搜尋關鍵字：組織名稱 + 募款 / 新聞
-        queries = [f"{keyword} 募款活動 2024 2025", f"{keyword} 爭議 新聞", f"{keyword} 競爭對手"]
-        for q in queries:
-            try:
-                results = list(ddgs.text(q, max_results=3))
-                for r in results:
-                    results_text += f"標題: {r['title']}\n內容: {r['body']}\n連結: {r['href']}\n\n"
-            except Exception as e:
-                print(f"搜尋錯誤: {e}")
+    try:
+        with DDGS() as ddgs:
+            # 搜尋關鍵字：組織名稱 + 募款 / 新聞
+            queries = [f"{keyword} 募款活動 2024 2025", f"{keyword} 爭議 新聞"]
+            for q in queries:
+                # 嘗試搜尋，若失敗則稍作休息
+                results = list(ddgs.text(q, max_results=2))
+                if results:
+                    for r in results:
+                        results_text += f"標題: {r['title']}\n摘要: {r['body']}\n連結: {r['href']}\n\n"
+                time.sleep(1) # 避免太快被擋
+    except Exception as e:
+        print(f"搜尋過程發生警告: {e}")
+    
     return results_text
 
 def analyze_data(org_name, search_results):
-    """呼叫 Gemini 分析資料並回傳 JSON"""
-    model = genai.GenerativeModel('gemini-1.5-flash') # 使用快速版模型
+    """呼叫 Gemini 分析資料"""
+    
+    # 【關鍵修正】改用最穩定的 gemini-pro 模型，避免 404 錯誤
+    model = genai.GenerativeModel('gemini-pro') 
+    
+    # 如果真的搜不到資料，就讓 AI 用它的內建知識庫回答，不要報錯
+    if not search_results:
+        search_results = "（注意：網路搜尋未返回結果，請根據您已知的背景知識進行分析。）"
     
     prompt = f"""
-    你是一位專業的行銷顧問。請根據以下搜尋到的真實資料，分析「{org_name}」的募款狀況。
+    你是一位專業的行銷顧問。請根據以下資料，分析「{org_name}」的募款狀況。
     
-    【搜尋資料】：
+    【參考資料】：
     {search_results}
     
     【任務】：
-    請嚴格輸出純 JSON 格式，不要包含 Markdown 標記（如 ```json），格式如下：
+    請嚴格輸出純 JSON 格式，不要包含 ```json 標記，格式如下：
     {{
         "pestel": {{
             "political": "政策相關發現...",
@@ -81,7 +91,13 @@ if run_btn and org_name:
         with st.status("🔍 AI 正在網路上閱讀相關新聞...", expanded=True) as status:
             st.write("正在搜尋 DuckDuckGo...")
             raw_data = search_web(org_name)
-            st.write(f"已獲取 {len(raw_data)} 字元的資料，正在進行語意分析...")
+            
+            # 顯示搜尋到的字數，讓你知道有沒有搜到
+            data_len = len(raw_data)
+            if data_len == 0:
+                st.warning("⚠️ 網路爬蟲未抓取到資料（可能被阻擋），將改用 AI 內建知識分析。")
+            else:
+                st.write(f"✅ 已獲取 {data_len} 字元的資料，正在進行語意分析...")
             
             # 階段 2: 分析
             analysis = analyze_data(org_name, raw_data)
@@ -93,10 +109,10 @@ if run_btn and org_name:
         st.header("1. 🌍 外部環境掃描 (PESTEL)")
         col1, col2 = st.columns(2)
         with col1:
-            st.info("**🏛️ 政策與經濟 (Political/Economic)**")
+            st.info("**🏛️ 政策與經濟**")
             st.write(analysis['pestel']['political'])
         with col2:
-            st.warning("**🗣️ 社會輿論 (Social)**")
+            st.warning("**🗣️ 社會輿論**")
             st.write(analysis['pestel']['social'])
 
         # 競品區塊
@@ -109,7 +125,8 @@ if run_btn and org_name:
         st.success(analysis['strategy'])
 
     except Exception as e:
-        st.error(f"發生錯誤，可能是 API 連線問題或搜尋不到資料。\n錯誤訊息: {e}")
+        st.error(f"發生錯誤: {e}")
+        st.markdown("建議：請重新整理網頁後再試一次，或檢查 API Key 是否正確。")
 
 elif run_btn:
     st.warning("請輸入組織名稱！")
