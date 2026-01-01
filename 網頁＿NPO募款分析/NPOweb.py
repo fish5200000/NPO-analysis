@@ -1,48 +1,115 @@
 import streamlit as st
-# 你需要安裝 langchain 或使用 google search api 來實作真的搜尋功能
-# 這裡展示介面邏輯
+import google.generativeai as genai
+from duckduckgo_search import DDGS
+import pandas as pd
+import json
 
-st.set_page_config(page_title="NPO 募款戰情室", layout="wide")
+# --- 1. 頁面設定 ---
+st.set_page_config(page_title="NPO 募款戰情室", page_icon="🚀", layout="wide")
+
+# --- 2. 設定 Gemini API (從 Secrets 讀取) ---
+# 為了安全，不要直接把 Key 寫在程式碼裡，稍後教你怎麼設定 Secrets
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.error("⚠️ 尚未設定 API Key！請去 Streamlit Cloud 後台設定 Secrets。")
+    st.stop()
+
+# --- 3. 定義功能函數 ---
+
+def search_web(keyword):
+    """使用 DuckDuckGo 搜尋網路資料"""
+    results_text = ""
+    with DDGS() as ddgs:
+        # 搜尋關鍵字：組織名稱 + 募款 / 新聞
+        queries = [f"{keyword} 募款活動 2024 2025", f"{keyword} 爭議 新聞", f"{keyword} 競爭對手"]
+        for q in queries:
+            try:
+                results = list(ddgs.text(q, max_results=3))
+                for r in results:
+                    results_text += f"標題: {r['title']}\n內容: {r['body']}\n連結: {r['href']}\n\n"
+            except Exception as e:
+                print(f"搜尋錯誤: {e}")
+    return results_text
+
+def analyze_data(org_name, search_results):
+    """呼叫 Gemini 分析資料並回傳 JSON"""
+    model = genai.GenerativeModel('gemini-1.5-flash') # 使用快速版模型
+    
+    prompt = f"""
+    你是一位專業的行銷顧問。請根據以下搜尋到的真實資料，分析「{org_name}」的募款狀況。
+    
+    【搜尋資料】：
+    {search_results}
+    
+    【任務】：
+    請嚴格輸出純 JSON 格式，不要包含 Markdown 標記（如 ```json），格式如下：
+    {{
+        "pestel": {{
+            "political": "政策相關發現...",
+            "social": "社會輿論發現..."
+        }},
+        "competitors": [
+            {{"name": "競品A", "slogan": "核心訴求...", "channel": "廣告渠道..."}},
+            {{"name": "競品B", "slogan": "核心訴求...", "channel": "廣告渠道..."}}
+        ],
+        "strategy": "給該組織的具體募款建議..."
+    }}
+    """
+    
+    response = model.generate_content(prompt)
+    
+    # 清理回應，確保是乾淨的 JSON
+    text = response.text.replace("```json", "").replace("```", "").strip()
+    return json.loads(text)
+
+# --- 4. 前端介面 UI ---
+
+with st.sidebar:
+    st.title("🎛️ 戰情控制台")
+    org_name = st.text_input("輸入組織名稱", "兒福聯盟")
+    run_btn = st.button("🚀 啟動 AI 全網分析", type="primary")
+    st.markdown("---")
+    st.caption("Powered by Gemini & DuckDuckGo")
 
 st.title("🚀 NPO 募款策略 AI 戰情室")
-st.markdown("輸入組織名稱，AI 將自動協助您完成行銷環境掃描與競品分析。")
+st.markdown("輸入組織名稱，AI 將自動**搜尋網路實時資料**並進行分析。")
 
-# 側邊欄輸入
-with st.sidebar:
-    org_name = st.text_input("輸入組織名稱或是議題", "例如：兒福聯盟")
-    run_btn = st.button("開始分析")
+if run_btn and org_name:
+    try:
+        # 階段 1: 搜尋
+        with st.status("🔍 AI 正在網路上閱讀相關新聞...", expanded=True) as status:
+            st.write("正在搜尋 DuckDuckGo...")
+            raw_data = search_web(org_name)
+            st.write(f"已獲取 {len(raw_data)} 字元的資料，正在進行語意分析...")
+            
+            # 階段 2: 分析
+            analysis = analyze_data(org_name, raw_data)
+            status.update(label="✅ 分析完成！", state="complete", expanded=False)
 
-# 主要分析區
-if run_btn:
-    with st.spinner(f'正在搜尋關於 {org_name} 的市場資料...'):
-        # 這裡通常會接上你的 n8n webhook 或是 OpenAI API
-        # 模擬 AI 搜尋回傳的結果
+        # 階段 3: 呈現結果
         
-        st.success("分析完成！")
-        
-        # 第一部分：外部環境
-        st.header("1. 🔍 外部環境掃描 (PESTEL)")
+        # PESTEL 區塊
+        st.header("1. 🌍 外部環境掃描 (PESTEL)")
         col1, col2 = st.columns(2)
         with col1:
-            st.info("**政策機會 (Political)**")
-            st.write(f"目前政府針對 {org_name} 相關領域的補助政策包含...")
+            st.info("**🏛️ 政策與經濟 (Political/Economic)**")
+            st.write(analysis['pestel']['political'])
         with col2:
-            st.warning("**社會趨勢 (Social)**")
-            st.write("近期新聞熱議話題集中在...")
+            st.warning("**🗣️ 社會輿論 (Social)**")
+            st.write(analysis['pestel']['social'])
 
-        # 第二部分：競品分析
+        # 競品區塊
         st.header("2. ⚔️ 競品雷達")
-        data = {
-            "競品名稱": ["競品A", "競品B"],
-            "核心訴求": ["讓愛傳遞", "看見改變"],
-            "募款贈品": ["環保袋", "悠遊卡"],
-            "廣告渠道": ["FB, IG", "Youtube"]
-        }
-        st.table(data)
+        df = pd.DataFrame(analysis['competitors'])
+        st.table(df)
 
-        # 第三部分：策略建議
+        # 策略建議區塊
         st.header("3. 💡 下一步策略")
-        st.markdown("""
-        * **受眾定位：** 建議鎖定 35-45 歲族群。
-        * **核心訊息：** 強調「透明度」與「直接影響力」。
-        """)
+        st.success(analysis['strategy'])
+
+    except Exception as e:
+        st.error(f"發生錯誤，可能是 API 連線問題或搜尋不到資料。\n錯誤訊息: {e}")
+
+elif run_btn:
+    st.warning("請輸入組織名稱！")
