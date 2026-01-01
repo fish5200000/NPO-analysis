@@ -8,8 +8,8 @@ import random
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(
-    page_title="NPO 戰情室 Pro", 
-    page_icon="🧠", 
+    page_title="NPO 募款策略顧問", 
+    page_icon="💎", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -21,88 +21,81 @@ else:
     st.error("⚠️ 請先在 Streamlit Cloud 設定 Secrets: GEMINI_API_KEY")
     st.stop()
 
-# --- 3. 核心功能函數 ---
+# --- 3. 核心搜尋引擎 (針對四大面向) ---
 
-def search_web_enhanced(org_name, category):
+def search_web_structured(org_name):
     """
-    增強版搜尋：針對輿情、競品、時事進行多角度搜索
+    執行 Gem 指令中的四大搜尋重點：自身活動、競品、輿情、政策
     """
     results_data = []
     
-    # 定義三組不同的搜尋視角
-    search_angles = [
-        # 1. 輿情與評價 (找 PTT, Dcard, 討論區)
-        f"{org_name} 評價 PTT Dcard 爭議",
-        # 2. 該領域的時事熱點 (找最近大家的關注點)
-        f"台灣 {category} 議題 新聞 趨勢 2024 2025",
-        # 3. 競品與廣告 (找對手在做什麼)
-        f"{category} 基金會 募款活動 案例"
+    # 這裡對應原本指令的「步驟 1：啟動 Google 搜尋」
+    search_queries = [
+        # 1. 自身剖析 (Recent Activity)
+        f"{org_name} 募款活動 新聞 2024 2025 成效",
+        # 2. 社會輿論 (Sentiment - PTT/Dcard)
+        f"{org_name} 評價 PTT Dcard 爭議 討論",
+        # 3. 政策與環境 (PESTEL - Policy/Social)
+        f"台灣 公益團體 募款 法規 政策 趨勢 2025",
+        # 4. 競爭對手 (Competitors)
+        f"{org_name} 競爭對手 類似組織 募款案例"
     ]
 
     try:
         with DDGS() as ddgs:
-            for query in search_angles:
-                # 每個角度抓取 2-3 筆精華
+            for query in search_queries:
+                # 每個角度抓取 2 筆最相關的
                 results = list(ddgs.text(query, max_results=2))
                 if results:
                     for r in results:
-                        # 儲存標題、內容與連結，作為佐證資料
-                        results_data.append({
-                            "source": r['title'],
-                            "snippet": r['body'],
-                            "link": r['href']
-                        })
-                time.sleep(random.uniform(0.5, 1.0)) # 隨機延遲防擋
+                        results_data.append(f"【來源】{r['title']}\n{r['body']}\n(連結: {r['href']})")
+                time.sleep(random.uniform(0.5, 1.0)) # 隨機延遲，模擬人類行為
     except Exception as e:
         print(f"搜尋警告: {e}")
     
-    return results_data
+    return "\n\n".join(results_data)
 
-def analyze_data_deep(org_name, category, search_data):
+def analyze_with_gem_logic(org_name, search_context):
     """
-    深度分析：要求 AI 根據證據推導策略
+    完全依照 Gem 指令的 Prompt 邏輯進行分析
     """
-    # 組合搜尋到的證據文字
-    evidence_text = ""
-    for idx, item in enumerate(search_data):
-        evidence_text += f"[{idx+1}] 來源：{item['source']}\n內容：{item['snippet']}\n\n"
-    
-    if not evidence_text:
-        evidence_text = "（網路搜尋無結果，請基於您的專業知識庫進行分析）"
-        source_note = "⚠️ 網路搜尋受阻，分析基於 AI 內建知識。"
-    else:
-        source_note = f"✅ 已搜集 {len(search_data)} 筆關鍵情報，包含輿情與新聞。"
-
-    # 使用 Gemini 2.5 Flash (目前最強大的模型)
+    # 使用目前權限最高的模型
     model = genai.GenerativeModel('models/gemini-2.5-flash')
 
+    # 這是你提供的原始指令架構，我將其轉化為 Prompt
     prompt = f"""
-    你現在是「{org_name}」的首席品牌策略長。我們專注於「{category}」領域。
-    請根據下方的【網路實證資料】，進行深度的募款行銷分析。
+    你是一位資深的非營利組織（NPO）募款策略顧問。
+    使用者的輸入組織為：「{org_name}」。
     
-    【網路實證資料】：
-    {evidence_text}
+    請根據下方的【真實搜尋資料】，產出一份募款行銷架構分析。
+    
+    【真實搜尋資料】：
+    {search_context}
 
-    【任務要求】：
-    請忽略泛泛而談的理論，我需要基於上述資料的「實戰建議」。
-    請回傳嚴格的 JSON 格式 (不要 Markdown)，結構如下：
+    【輸出規定】：
+    請嚴格依照以下 JSON 格式回傳 (不要 Markdown 標記)，以利系統生成圖表：
     {{
-        "market_sentiment": {{
-            "mood": "目前的社會輿論氛圍 (例如：焦慮、憤怒、溫馨)",
-            "keywords": ["關鍵字1", "關鍵字2", "關鍵字3"],
-            "insight": "針對該議題，大眾目前最在意的點是什麼？"
+        "self_analysis": {{
+            "recent_activity": "該組織近期的主要活動或新聞摘要",
+            "public_sentiment": "目前的網路輿論風向 (PTT/Dcard/新聞熱度)"
         }},
-        "competitor_analysis": [
-            {{"name": "競品A", "strength": "他們做對了什麼？", "weakness": "我們可以攻擊的弱點"}}
+        "pestel": {{
+            "policy_economic": "政策(P)與經濟(E)的重點發現 (補助/法規/景氣)",
+            "social": "社會(S)趨勢與輿論熱點",
+            "opportunity_judgment": "機會點判定 (現在適合募款嗎？為什麼？)"
+        }},
+        "competitors": [
+            {{"name": "競品A", "slogan": "核心訴求", "gift": "募款贈品/回饋", "channel": "行銷渠道"}},
+            {{"name": "競品B", "slogan": "核心訴求", "gift": "募款贈品/回饋", "channel": "行銷渠道"}}
         ],
-        "target_audience": {{
-            "persona": "描述核心捐款人的輪廓 (年齡/職業/興趣)",
-            "pain_point": "他們為什麼會想捐款？心裡的痛點或渴望是什麼？"
-        }},
-        "communication_strategy": {{
-            "angle": "建議的溝通切角 (例如：從受害者故事出發 vs 從數據成效出發)",
-            "tone": "建議語氣 (例如：權威專業 vs 溫暖陪伴)",
-            "channels": "建議投放渠道 (FB/IG/Podcast/Line)"
+        "strategy": {{
+            "target_audience": "建議目標受眾 (具體族群)",
+            "pain_points": "受眾痛點洞察 (為什麼捐款?)",
+            "action_plan": [
+                "具體建議1",
+                "具體建議2",
+                "具體建議3"
+            ]
         }}
     }}
     """
@@ -110,100 +103,113 @@ def analyze_data_deep(org_name, category, search_data):
     try:
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text), source_note
+        return json.loads(text)
     except Exception as e:
-        return None, f"AI 分析失敗: {str(e)}"
+        return None
 
 # --- 4. 前端介面 UI ---
 
 with st.sidebar:
-    st.title("🎛️ 戰情控制台")
+    st.title("🎛️ 顧問控制台")
     st.markdown("---")
-    
-    # 輸入區
-    org_name = st.text_input("輸入組織名稱", "台灣展翅協會")
-    category = st.selectbox(
-        "選擇組織關注領域", 
-        ["教育與學習", "心理健康與諮商", "兒少保護", "環境與動物", "醫療與長照", "性別與人權"]
-    )
-    
-    run_btn = st.button("🚀 啟動深度分析", type="primary")
-    
-    st.markdown("---")
-    st.info("💡 小撇步：選擇正確的領域，能幫助 AI 更精準地找到競爭對手。")
+    org_name = st.text_input("輸入組織名稱或議題", "兒福聯盟")
+    run_btn = st.button("🚀 啟動顧問分析", type="primary")
+    st.caption("架構：PESTEL + 競品雷達 + 策略建議")
 
-# 主畫面
-st.title("🧠 NPO 募款戰略顧問 (Pro)")
-st.markdown(f"針對 **{category}** 領域的輿情與競品深度解析")
+# 主標題
+st.title("💎 NPO 募款策略顧問")
+st.markdown("本系統將模擬資深顧問思維，結合 **Google 搜尋** 與 **Gemini 邏輯推演**，為您產出架構化報告。")
 
 if run_btn and org_name:
-    # 執行流程視覺化
-    with st.status("🔍 戰略分析中...", expanded=True) as status:
+    # 執行狀態
+    with st.status("🔍 顧問正在工作中...", expanded=True) as status:
         
-        st.write("📡 1. 正在掃描 PTT/Dcard 輿情與時事新聞...")
-        search_results = search_web_enhanced(org_name, category)
+        st.write(f"1. 正在調查「{org_name}」的近期活動與網路評價 (PTT/Dcard)...")
+        # 搜尋邏輯已更新：包含自身剖析
+        search_data = search_web_structured(org_name)
         time.sleep(1)
         
-        st.write("🧠 2. 正在進行受眾輪廓與溝通策略推演...")
-        analysis, note = analyze_data_deep(org_name, category, search_results)
+        st.write("2. 正在掃描外部政策環境與競爭對手...")
+        
+        st.write("3. 正在撰寫分析報告...")
+        analysis = analyze_with_gem_logic(org_name, search_data)
         
         if analysis:
-            status.update(label="✅ 分析完成！", state="complete", expanded=False)
+            status.update(label="✅ 報告生成完畢！", state="complete", expanded=False)
         else:
             status.update(label="❌ 分析失敗", state="error")
-            st.error(note)
+            st.error("AI 無法生成 JSON，請重試。")
             st.stop()
 
-    st.success(note)
+    # --- 報告呈現區 (依照你要求的 Markdown 格式轉化為 UI) ---
 
-    # --- 分析報告呈現區 ---
+    # 0. 自身剖析 (新增區塊)
+    st.header(f"0. 🔎 關於 {org_name} 的現況掃描")
+    self_data = analysis.get('self_analysis', {})
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        st.info("**📰 近期活動/新聞**")
+        st.write(self_data.get('recent_activity', '無顯著資料'))
+    with col_s2:
+        st.warning("**🗣️ 網路輿論 (PTT/Dcard)**")
+        st.write(self_data.get('public_sentiment', '無顯著資料'))
 
-    # 1. 輿情風向球
-    st.header("1. 🌪️ 市場輿情風向")
-    sent = analysis.get('market_sentiment', {})
-    
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.metric("社會氛圍", sent.get('mood', '中性'))
-    with col2:
-        st.write(f"**🔥 熱門關鍵字：** {', '.join(sent.get('keywords', []))}")
-        st.info(f"**💡 洞察：** {sent.get('insight', '無資料')}")
+    st.divider()
 
-    # 2. 受眾與溝通 (這是你最想要的)
-    st.header("2. 🎯 受眾輪廓與溝通策略")
+    # 1. PESTEL 分析
+    st.header("1. 📊 外部環境掃描 (PESTEL)")
+    pestel = analysis.get('pestel', {})
     
-    tab1, tab2 = st.tabs(["👤 誰會捐款？ (Persona)", "📢 該怎麼說？ (Strategy)"])
+    st.markdown("#### **🏛️ 政策 (P) & 經濟 (E)**")
+    st.write(pestel.get('policy_economic', ''))
     
-    with tab1:
-        ta = analysis.get('target_audience', {})
-        st.subheader("核心捐款人畫像")
-        st.markdown(f"**{ta.get('persona', '一般大眾')}**")
-        st.warning(f"❤️ **深層動機 (Pain Point)：**\n{ta.get('pain_point', '')}")
+    st.markdown("#### **🔥 社會 (S)**")
+    st.write(pestel.get('social', ''))
     
-    with tab2:
-        comm = analysis.get('communication_strategy', {})
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f"**🔪 切入角度：**\n{comm.get('angle', '')}")
-        c2.markdown(f"**🗣️ 語氣設定：**\n{comm.get('tone', '')}")
-        c3.markdown(f"**📱 建議渠道：**\n{comm.get('channels', '')}")
+    st.markdown("#### **💡 機會點判定**")
+    st.success(pestel.get('opportunity_judgment', ''))
 
-    # 3. 競品攻防
-    st.header("3. ⚔️ 競品攻防分析")
-    comps = analysis.get('competitor_analysis', [])
+    st.divider()
+
+    # 2. 競品雷達
+    st.header("2. ⚔️ 競品雷達偵測")
+    comps = analysis.get('competitors', [])
     if comps:
-        # 用卡片式呈現競品
-        for comp in comps:
-            with st.expander(f"🆚 競爭對手：{comp.get('name', '未知')}"):
-                st.write(f"💪 **優勢：** {comp.get('strength', '')}")
-                st.write(f"🛡️ **弱點 (機會點)：** {comp.get('weakness', '')}")
+        # 轉成乾淨的表格
+        df = pd.DataFrame(comps)
+        # 重新命名欄位以符合顯示
+        df = df.rename(columns={
+            "name": "競品名稱",
+            "slogan": "核心訴求 (Slogan)",
+            "gift": "募款贈品/回饋",
+            "channel": "行銷渠道"
+        })
+        st.table(df)
+    else:
+        st.write("未搜尋到明確競品資料。")
 
-    # 4. 證據來源 (增加可信度)
-    st.markdown("---")
-    with st.expander("📚 查看 AI 參考的原始資料來源 (Evidence)"):
-        for item in search_results:
-            st.markdown(f"**[{item['source']}]({item['link']})**")
-            st.caption(item['snippet'])
-            st.markdown("---")
+    st.divider()
+
+    # 3. 策略建議
+    st.header("3. 🎯 受眾與策略建議")
+    strategy = analysis.get('strategy', {})
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("👥 建議目標受眾")
+        st.write(strategy.get('target_audience', ''))
+    with col2:
+        st.subheader("💔 痛點洞察")
+        st.write(strategy.get('pain_points', ''))
+    
+    st.subheader("🚀 下一步行動 (CTA)")
+    actions = strategy.get('action_plan', [])
+    for idx, action in enumerate(actions):
+        st.markdown(f"**{idx+1}. {action}**")
+
+    # 4. 資料來源 (確保有憑有據)
+    with st.expander("📚 點此查看原始搜尋來源與證據"):
+        st.text(search_data)
 
 elif run_btn:
-    st.toast("請輸入組織名稱並選擇領域！", icon="⚠️")
+    st.toast("請輸入組織名稱！", icon="⚠️")
