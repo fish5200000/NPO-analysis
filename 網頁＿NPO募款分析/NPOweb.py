@@ -1,105 +1,159 @@
 import streamlit as st
 import google.generativeai as genai
 from duckduckgo_search import DDGS
+import pandas as pd
 import json
 import time
 
-st.set_page_config(page_title="NPO 戰情室 (模型檢測版)", layout="wide")
+# --- 1. 頁面設定 ---
+st.set_page_config(
+    page_title="NPO 募款戰情室", 
+    page_icon="🚀", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 1. 設定與檢查 API Key ---
+# --- 2. 設定 Gemini API ---
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 else:
-    st.error("❌ 尚未設定 API Key (Secrets)")
+    st.error("⚠️ 尚未設定 API Key！請去 Streamlit Cloud 後台設定 Secrets。")
     st.stop()
 
-# --- 2. 關鍵步驟：列出所有可用模型 ---
-st.title("🕵️‍♀️ 模型權限偵測")
-st.info("我們來檢查您的 API Key 到底可以使用哪些模型...")
-
-available_models = []
-try:
-    # 呼叫 Google 查詢可用模型清單
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            available_models.append(m.name)
-    
-    st.success(f"✅ 成功連線！您的 Key 支援以下 {len(available_models)} 個模型：")
-    st.code(available_models)
-    
-except Exception as e:
-    st.error(f"❌ 無法列出模型，API Key 可能無效或受限。\n錯誤訊息: {e}")
-    st.stop()
-
-# --- 3. 自動選擇一個會動的模型 ---
-# 優先順序： Flash -> Pro -> 任何可用的
-target_model = "models/gemini-1.5-flash"
-if "models/gemini-1.5-flash" not in available_models:
-    if "models/gemini-pro" in available_models:
-        target_model = "models/gemini-pro"
-        st.warning("⚠️ 您的 Key 不支援 Flash，將自動降級使用 gemini-pro")
-    else:
-        # 如果都沒有，就拿清單裡的第一個
-        if available_models:
-            target_model = available_models[0]
-            st.warning(f"⚠️ 找不到常用模型，將強制使用: {target_model}")
-        else:
-            st.error("❌ 您的帳號似乎沒有任何可用的文字生成模型。")
-            st.stop()
-else:
-    st.success("✨ 檢測通過：將使用 gemini-1.5-flash")
-
-# ==========================================
-# 下面是正常的分析功能 (使用上面選出來的 target_model)
-# ==========================================
+# --- 3. 核心功能函數 ---
 
 def search_web(keyword):
+    """搜尋網路資料 (DuckDuckGo)"""
     results_text = ""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(f"{keyword} 新聞", max_results=2))
-            if results:
-                for r in results:
-                    results_text += f"標題: {r['title']}\n摘要: {r['body']}\n\n"
+            # 搜尋兩次以確保覆蓋率
+            queries = [f"{keyword} 募款活動 爭議", f"{keyword} 行銷 競爭對手"]
+            for q in queries:
+                results = list(ddgs.text(q, max_results=2))
+                if results:
+                    for r in results:
+                        results_text += f"標題: {r['title']}\n摘要: {r['body']}\n連結: {r['href']}\n\n"
+                time.sleep(0.5) # 避免過快請求
     except Exception as e:
-        results_text = "(搜尋被阻擋，改用內建知識)"
+        print(f"搜尋警告: {e}")
+    
     return results_text
 
-def analyze_data(org_name, search_results, model_name):
-    # 使用我們剛剛檢測到的「可用模型」
+def analyze_data(org_name, search_results):
+    """呼叫 Gemini 2.5 分析資料"""
+    
+    # 【關鍵修正】使用你帳號清單中最強的 Flash 模型
+    model_name = 'models/gemini-2.5-flash' 
+    
+    # 防呆：如果沒搜到資料，就用 AI 內建知識
+    if not search_results or len(search_results) < 10:
+        source_note = "⚠️ 網路爬蟲被阻擋或無新資料，分析將基於 AI 內建知識庫。"
+        data_context = "（網路搜尋無結果，請用你已知的知識進行分析）"
+    else:
+        source_note = "✅ 分析依據：包含網路實時搜尋資料。"
+        data_context = search_results
+
+    # 建立模型
     model = genai.GenerativeModel(model_name)
-    
+
     prompt = f"""
-    你是募款顧問。請根據以下資訊分析「{org_name}」：
-    {search_results}
+    你是一位專業的非營利組織(NPO)募款顧問。請分析「{org_name}」的行銷現況。
     
-    請回傳純 JSON 格式:
+    【參考資料】：
+    {data_context}
+    
+    【輸出規定】：
+    請回傳嚴格的 JSON 格式，不要包含 Markdown (```json)，格式如下：
     {{
-        "pestel_summary": "環境分析...",
-        "competitors": [{{"name": "競品A", "strategy": "..."}}],
-        "suggestion": "三個建議..."
+        "pestel": {{
+            "opportunity": "外部機會點 (政策/社會趨勢)...",
+            "threat": "外部威脅點 (經濟/競爭)..."
+        }},
+        "competitors": [
+            {{"name": "競品A", "slogan": "核心訴求", "channel": "主要管道"}},
+            {{"name": "競品B", "slogan": "核心訴求", "channel": "主要管道"}}
+        ],
+        "strategy": {{
+            "target": "建議目標受眾",
+            "action": "具體行銷建議 (一句話)"
+        }}
     }}
     """
+    
     try:
         response = model.generate_content(prompt)
+        # 清理回應，確保 JSON 格式正確
         text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
+        return json.loads(text), source_note
     except Exception as e:
-        return {"suggestion": f"發生錯誤: {e}"}
+        return None, f"模型分析失敗 ({model_name}): {str(e)}"
 
-# --- UI ---
-st.markdown("---")
-st.header("🚀 NPO 分析器 (自動適配版)")
-org_name = st.text_input("輸入組織名稱", "台灣癌症基金會")
+# --- 4. 前端介面 UI ---
 
-if st.button("開始分析"):
-    with st.status("正在執行..."):
-        st.write(f"1. 使用模型: {target_model}")
-        st.write("2. 搜尋資料中...")
-        data = search_web(org_name)
-        st.write("3. AI 分析中...")
-        result = analyze_data(org_name, data, target_model)
-        st.write("✅ 完成！")
+with st.sidebar:
+    st.title("🎛️ 戰情控制台")
+    st.markdown("---")
+    org_name = st.text_input("輸入組織名稱", "台灣癌症基金會")
+    run_btn = st.button("🚀 啟動 AI 全網分析", type="primary")
     
-    st.subheader("分析結果")
-    st.write(result)
+    st.markdown("---")
+    st.caption("Core: Gemini 2.5 Flash")
+    st.caption("Search: DuckDuckGo")
+
+# 主標題區
+st.title("🚀 NPO 募款策略 AI 戰情室")
+st.markdown("輸入組織名稱，AI 將自動**搜尋網路實時資料**並進行 PESTEL 與競品分析。")
+
+if run_btn and org_name:
+    # 進度條與狀態顯示
+    with st.status("🤖 AI 正在工作中...", expanded=True) as status:
+        
+        st.write("🔍 1. 正在潛入網路搜尋最新資料...")
+        raw_data = search_web(org_name)
+        time.sleep(1)
+        
+        st.write("🧠 2. 正在呼叫 Gemini 2.5 進行策略運算...")
+        analysis, note = analyze_data(org_name, raw_data)
+        
+        if analysis:
+            status.update(label="✅ 分析完成！", state="complete", expanded=False)
+        else:
+            status.update(label="❌ 發生錯誤", state="error")
+            st.error(note)
+            st.stop()
+
+    # 顯示資料來源提示
+    if "⚠️" in note:
+        st.warning(note)
+    else:
+        st.success(note)
+
+    # --- 分析結果呈現區 ---
+    
+    # 1. 環境掃描
+    st.header("1. 🌍 外部機會與威脅 (OT分析)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("**🚀 機會點 (Opportunity)**")
+        st.write(analysis.get('pestel', {}).get('opportunity', '無資料'))
+    with col2:
+        st.error("**⚠️ 威脅點 (Threat)**")
+        st.write(analysis.get('pestel', {}).get('threat', '無資料'))
+
+    # 2. 競品表格
+    st.header("2. ⚔️ 競品雷達")
+    comps = analysis.get('competitors', [])
+    if comps:
+        st.table(pd.DataFrame(comps))
+    else:
+        st.caption("本次分析未發現顯著競爭對手資料。")
+
+    # 3. 策略建議
+    st.header("3. 💡 下一步行動建議")
+    strategy = analysis.get('strategy', {})
+    st.markdown(f"**🎯 鎖定受眾：** {strategy.get('target', '一般大眾')}")
+    st.markdown(f"**⚡ 行動方針：** {strategy.get('action', '加強品牌曝光')}")
+
+elif run_btn:
+    st.toast("請先輸入組織名稱！", icon="⚠️")
